@@ -7,9 +7,9 @@
 #define beta 24
 
 enum NextToRun { Top_Down, Bottom_Up };
-typedef graph<int, long, int, long, long, char> Graph
-inline void bfs_top_down(Graph *ginst, std::queue<int> frontier, std::bitset bitmap, int &exploredEdges);
-inline void bfs_bottom_up(Graph *ginst, std::queue<int> &frontier, std::bitset bitmap, int &edgesExplored);
+typedef graph<int, long, int, long, long, char> Graph;
+inline void bfs_top_down(Graph *ginst, std::queue<int> frontier, std::bitset<int> bitmap, int &exploredEdges);
+inline void bfs_bottom_up(Graph *ginst, std::queue<int> &frontier, std::bitset<int> bitmap, int &edgesExplored);
 inline NextToRun bfs_switch(Graph *ginst, std::queue<int> frontier, int edgesExplored);
 int main(int argc, char* argv[])
 { 
@@ -41,7 +41,7 @@ int main(int argc, char* argv[])
     
   return 0;
 }
-inline void bfs_top_down(Graph *ginst, std::queue<int> frontier, std::bitset bitmap, int &exploredEdges)
+inline void bfs_top_down(Graph *ginst, std::queue<int> frontier, std::bitset<int> bitmap, int &exploredEdges)
 {
 	/* Needs Heruistic Added and potentially weight info */
 	//Add intial
@@ -67,7 +67,7 @@ inline void bfs_top_down(Graph *ginst, std::queue<int> frontier, std::bitset bit
 		frontier.pop();
 	}
 }
-inline void bfs_bottom_up(Graph *ginst, std::queue<int> &frontier, std::bitset bitmap, int &edgesExplored)
+inline void bfs_bottom_up(Graph *ginst, std::queue<int> &frontier, std::bitset<int> bitmap, int &edgesExplored)
 {
 	while (!frontier.empty()) { frontier.pop(); } //I believe we want a cleared frontier, since we are now finding all the "children" a different way, and don't need current queue
 	for (int i = 1; i < ginst->vert_count; i++) //Node 1 on
