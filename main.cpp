@@ -6,12 +6,17 @@
 #define alpha 12
 #define beta 24
 
+enum NextToRun { Top_Down, Bottom_Up };
 typedef graph<int, long, int, long, long, char> Graph
 inline void bfs_top_down(Graph *ginst, std::queue<int> frontier, std::bitset bitmap, int &exploredEdges);
 inline void bfs_bottom_up(Graph *ginst, std::queue<int> &frontier, std::bitset bitmap, int &edgesExplored);
+inline NextToRun bfs_switch(Graph *ginst, std::queue<int> frontier, int edgesExplored);
 int main(int argc, char* argv[])
 { 
-	/* Assumes that nodes/vertices start at 1 and go from there (based on example file) */
+	/* 
+	Assumes that nodes/vertices start at 1 and go from there (based on example file) 
+	May need to Modify so it can work either way (Check if first node is marked as 0 or 1 and proceed based on result)
+	*/
   std::cout << "Input: ./exe beg csr weight\n";
   if (args != 4) { std::cout << "Wrong input\n"; return -1; }
 
@@ -26,8 +31,9 @@ int main(int argc, char* argv[])
   std::queue<int> frontier;
   int exploredEdges = 0;
   while (bitmap.count() == bitmap.size())
-  { // Will switch to the other when the previous one returns (which it will do depending on the value it recieves from switch function)
-	 //Requires one check extra check somewhere if we finish program on top_down, we need to know to skip bottom_up
+  {
+	 // Will switch to the other when the previous one returns (which it will do depending on the value it recieves from switch function)
+	 // Requires one check extra check somewhere if we finish program on top_down, we need to know to skip bottom_up
 	  bfs_top_down(ginst, frontier, bitmap, exploredEdges);
 
 	  bfs_bottom_up(ginst, frontier, bitmap, edgesExplored);
@@ -82,7 +88,7 @@ inline void bfs_bottom_up(Graph *ginst, std::queue<int> &frontier, std::bitset b
 		}
 	}
 }
-inline int bfs_switch(Graph *ginst, std::queue<int> frontier, int edgesExplored)
+inline NextToRun bfs_switch(Graph *ginst, std::queue<int> frontier, int edgesExplored)
 {
 	std::queue<int> copy_frontier(frontier); //Seems like a big downside -- Creating a copy
 	int edgesFrontier = 0; //m_f -- For each Vertice in Queue, find beg_pos[vertex+1]-beg_pos[vertex]
@@ -95,10 +101,10 @@ inline int bfs_switch(Graph *ginst, std::queue<int> frontier, int edgesExplored)
 	}
 	if (edgesFrontier > (edgesUnexploredNodes / alpha)) // Go to Bottom-Up
 	{
-		return 1; //Setup an ENUM for these?
+		return Bottom_Up;
 	}
 	else if (verticesFrontier < (ginst->vert_count / beta)) //Go to Top-Down
 	{
-		return 0;
+		return Top_Down;
 	}
 }
