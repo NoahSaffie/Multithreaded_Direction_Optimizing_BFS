@@ -3,9 +3,10 @@
 #include "graph.h"
 #include <queue>
 #include <chrono>
-#define alpha 1.17 // Was 12 but found it favored Bottom-Up way too much - 1 keeps it from switching but is always close to switching, so a little >1 is perfect
+#define alpha 2.77  // Was 12 but found it favored Bottom-Up way too much - 1 keeps it from switching but is always close to switching, so a little >1 is perfect
 //@ 1.15:: Explored nodes 2789664/3072627, 12071273/117185083 edges, and Top-Down found 60 % of edges, taking up 52% of runtime (1838461 ms total)
 //@ 1.17:: Explored nodes 2781249/3072627, 11776471/117185083 edges, and Top-Down found 56 % of edges, taking up 50% of runtime (1833991 ms total)
+// -- Change -- After neeeding to use Reversing of Edges, bumping this up became beneficial
 #define beta 24
 
 //Timing
@@ -63,7 +64,6 @@ int main(int argc, char* argv[])
           break;
         }
     }
-  //std::cout << "Node: " << frontier.front() << std::endl;
   edgesFrontier += (ginst->beg_pos[frontier.front()+1] - ginst->beg_pos[frontier.front()]);
   
   //Find true # of vertices
@@ -75,6 +75,15 @@ int main(int argc, char* argv[])
         {
           last_num = ginst->beg_pos[j];
           ++num_vertices;
+        }
+    }
+  last_num = 0;
+  //Mark all nodes that are "blank" (no neigbors, only added through graph functions) - to speed up later operations
+  for(int j = 1; j < ginst->vert_count; ++j)
+    {
+      if(ginst->beg_pos[j] == last_num)
+        {
+	  bitmap.at(j) = true;
         }
     }
   //Stats - Init
@@ -114,20 +123,6 @@ int main(int argc, char* argv[])
     }
   TimeVar end = timeNow();
   double time_total = duration(end-start);
-  //Deprecated by Tracking of nodes within function
-  int nodesVisited = 0;
-  for(unsigned i = 0; i < bitmap.size(); i++)
-    {
-      if(!bitmap.at(i))
-	{
-	  long int degree = ginst->beg_pos[i+1]-ginst->beg_pos[i];
-	  if(degree)
-	    {
-	      //std::cout << "Node: " << i << "\tDegree: " << degree << "\tIs first Neighbor Taken: " << bitmap.at(ginst->csr[ginst->beg_pos[i]]) << std::endl;
-	      ++nodesVisited;
-	    }
-	}
-    }
   //Nodes: 3072441
   std::cout << "Switches: " << totalSwitches << std::endl;
   std::cout << "Nodes: " << "\t\t%Top_Down: " << 100*(nodes_TD*1.0/nodesExplored) << "\t%Bottom_Up: " << 100*(nodes_BU*1.0/nodesExplored) << "\tTotal: " << nodesExplored << std::endl;
@@ -155,7 +150,7 @@ inline NextToRun bfs_top_down(Graph *ginst, std::queue<int> &frontier, std::vect
       memset(partial_edgesExplored, 0, sizeof(int)*num_threads);
       memset(partial_edgesFrontier, 0, sizeof(int)*num_threads);
       memset(partial_nodesExplored, 0, sizeof(int)*num_threads);
-      #pragma omp parallel for num_threads(num_threads) default(none) firstprivate(partial_edgesExplored, partial_edgesFrontier, partial_nodesExplored, ginst) shared(bitmap, frontier)
+#pragma omp parallel for num_threads(num_threads) schedule(static) default(none) firstprivate(ginst) shared(bitmap, frontier, partial_edgesExplored, partial_edgesFrontier, partial_nodesExplored)
       for (int begin = ginst->beg_pos[frontier.front()]; begin < ginst->beg_pos[frontier.front()+1]; begin++)
         { // This is always run because you can't have a node on the frontier with a 0 degree (Loop runs iterations = degree) since visiting a 0 degree node is impossible
 	  int tid = omp_get_thread_num();
@@ -203,8 +198,16 @@ inline NextToRun bfs_bottom_up(Graph *ginst, std::queue<int> &frontier, std::vec
     However we want to avoid telling the function that we have visited (found a connection) to the node because then it might try (and succeed) at finding conenctions to that new
     point, which can be an issue. Especially when parallelization happens since it could cause inconsistent results across different runs
   */
-  while (!frontier.empty()) { frontier.pop(); } //I believe we want a cleared frontier, since we are now finding all the "children" a different way, and don't need current queue
-  edgesFrontier = 0;
+  /*
+    Problem: "Skipping" (Really just never getting to) certain vertexes/nodes
+       Know: Not Open_MP related
+       Originates in this function (Running just Top_Down finds all correctly)
+          Either Through passing back wrong queue items or simply failing to do correct operations
+
+   */
+  while (!frontier.empty()) { frontier.pop(); } edgesFrontier = 0; //I believe we want a cleared frontier, since we are now finding all the "children" a different way, and don't need current queue
+  //Also is forced since there is no place to pop from frontier in this function, and you only "leave" it when frontier gets small enough, so if we didn't clear it keeps getting bigger (to a max) but
+  //turns into an infinite loop.
   int num_threads = omp_get_num_threads();
   int* partial_edgesExplored = (int*)malloc(sizeof(int)*num_threads);
   int* partial_edgesFrontier = (int*)malloc(sizeof(int)*num_threads);
@@ -212,20 +215,21 @@ inline NextToRun bfs_bottom_up(Graph *ginst, std::queue<int> &frontier, std::vec
   memset(partial_edgesExplored, 0, sizeof(int)*num_threads);
   memset(partial_edgesFrontier, 0, sizeof(int)*num_threads);
   //Tried Dynamic but generally had worse performance, guided was about same as static
-  #pragma omp parallel for num_threads(num_threads) schedule(static) default(none) firstprivate(ginst) shared(partial_edgesExplored, partial_edgesFrontier, bitmap, frontier)
+  #pragma omp parallel for num_threads(num_threads) schedule(static) default(none) firstprivate(ginst) shared(bitmap, frontier, partial_edgesExplored, partial_edgesFrontier)
   for (int i = 0; i < ginst->vert_count; i++)
     {
-      if (!bitmap.at(i)) //Unexplored
+      if (!bitmap.at(i)) //Unexplored (Only want to look through potential children of frontier)
         {
 	  int tid = omp_get_thread_num(); //Ideally not have in loop at all
 	  int end = ginst->beg_pos[i+1];
+	  //If the node is a 0 degree one then loop won't run (Possible to mark all of these early on but seemed to have performance loss not gain)
           for (int begin = ginst->beg_pos[i]; begin < end; begin++) //Indexes in CSR
             {
 	      int node = ginst->csr[begin]; //Neighbor of i
               ++(partial_edgesExplored[tid]);
               if (bitmap.at(node)) //Find a neighbor that has been visited, it will be a parent (on frontier too)
                 {
-                  frontier.push(i);
+                  frontier.push(i); // Now that the unexplored vertice has found a parent amonst it's neighbors/connections we can add it to the frontier (and will later mark as visited)
 		  partial_edgesFrontier[tid] += (ginst->beg_pos[i+1] - ginst->beg_pos[i]);
                   break;
                 }
