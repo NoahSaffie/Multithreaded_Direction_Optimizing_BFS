@@ -105,11 +105,11 @@ int main(int argc, char* argv[])
         }
       total_nodes = 0;
       for(unsigned i = 0; i < nodes.size(); ++i){total_nodes+= nodes.at(i);}
-      printf("Nodes: %d\n", total_nodes);
+      //printf("Nodes: %d\n", total_nodes);
     }
   TimeVar end = timeNow();
   double time_total = duration(end-start);
-  for(unsigned i = 0; i < nodes.size()-1; ++i)
+  for(unsigned i = 0; i < nodes.size(); ++i)
     {
       printf("Level: %d\tFrontier Size: %d\tEdges: %d\n", i, nodes.at(i), edges.at(i));
     }
@@ -126,8 +126,8 @@ int main(int argc, char* argv[])
 }
 inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplored, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level)
 {
-  printf("Current_Level: %d\n", current_level);
-  int number_threads = omp_get_num_threads(); printf("Threads TD: %d\n", number_threads); //4 for this system {0,1,2,3}
+  //printf("Current_Level: %d\n", current_level);
+  int number_threads = omp_get_num_threads(); //printf("Threads TD: %d\n", number_threads); //4 for this system {0,1,2,3}
   int* partial_edgesExplored = new int[number_threads];  assert(partial_edgesExplored != NULL);
   int* partial_edgesFrontier = new int[number_threads]; assert(partial_edgesFrontier != NULL);
   int* partial_nodes = new int[number_threads]; assert(partial_nodes != NULL);
@@ -190,13 +190,11 @@ inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplor
 }
 inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplored, unsigned num_vertices, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level)
 {
-  /*
-    Problems: partial_nodes needs to be a 2d array but can't know for sure how big it should be (since there is a possibility that a level gets set past current_level)
-    Partial_Solution: Only recongize parents at current_level-1
-  */
-  printf("Current_Level: %d\n", current_level);
+  //Potential inconsistent results at loop level, since if a loop finishes a incomplete level, and then comes across some of the neighbors to that incomplete part, then it will see them as parents
+  //as well. BUt sometimes a loop may have already passed this point so it never the previously imcomplete part of previous level as parents (in the end answer should be consistent)
+  //printf("Current_Level: %d\n", current_level);
   edgesFrontier = 0;
-  int number_threads = omp_get_num_threads(); printf("Threads BU: %d\n", omp_get_num_threads());
+  int number_threads = omp_get_num_threads(); //printf("Threads BU: %d\n", omp_get_num_threads());
   int* partial_edgesExplored = new int[number_threads]; assert(partial_edgesExplored != NULL);
   int* partial_edgesFrontier = new int[number_threads]; assert(partial_edgesFrontier != NULL);
   //int* partial_nodes = new int[number_threads]; assert(partial_nodes != NULL); //1D
@@ -223,16 +221,14 @@ inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplo
             int neighbor_end = ginst->beg_pos[vert_index+1];
             for (int neighbor_index = neighbor_beg; neighbor_beg < neighbor_end; ++neighbor_index) //Indexes in CSR
               {
+		int node = ginst->csr[neighbor_index]; //Neighbor of vert_index
                 ++partial_edgesExplored[tid];
-                int node = ginst->csr[neighbor_index]; //Neighbor of vert_index
-                if (level[node] != -1 && (level[node] == current_level || level[node] == current_level-1)) //Find a neighbor that has been visited, it will be a parent (on frontier too)
-                  { //Above limits it to only find one level out (and to complete previous level if not already complete)
-                    level[vert_index] = level[node]+1; //Might have an issue though if the parent it finds first isn't lowest level one?
+                if (level[node] != -1 && (level[node] == current_level || level[node] == current_level-1)) //Visited neighbor limited to current_level or 1 before (if previous level is incomplete)
+                  { 
+                    level[vert_index] = level[node]+1;
                     ++(partial_nodes[tid][(current_level-level[vert_index]+1)]); //Should be 1 for next_level and 0 for previous level (==current_level)
-                    if(level[vert_index] == current_level || level[vert_index] == current_level-1)
-                      { //If the previous level wasnt filled (since we are doing current_level++ when changing to here) then that part of it counts as the frontier too
-                        partial_edgesFrontier[tid] += (ginst->beg_pos[vert_index+1] - ginst->beg_pos[vert_index]);
-                      }
+                    //if(level[vert_index] == current_level || level[vert_index] == current_level-1)
+		    partial_edgesFrontier[tid] += (ginst->beg_pos[vert_index+1] - ginst->beg_pos[vert_index]);
                     break;
                   }
               }
@@ -257,5 +253,5 @@ inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplo
   delete[] partial_nodes;
   delete[] partial_edgesExplored;
   delete[] partial_edgesFrontier;
-  return nodes.at(current_level-1) < ((int)num_vertices / beta) ? Top_Down:Bottom_Up;
+  return nodes.at(current_level) < ((int)num_vertices / beta) ? Top_Down:Bottom_Up;
 }
