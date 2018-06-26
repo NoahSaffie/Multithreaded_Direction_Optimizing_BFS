@@ -2,15 +2,9 @@
 #include <omp.h>
 #include "graph.h"
 #include <queue>
-#include <chrono>
-#define alpha 120  // Was 12 but found it favored Bottom-Up way too much - 1 keeps it from switching but is always close to switching
-// -- Change -- After neeeding to use Reversing of Edges, bumping this up became beneficial
-#define beta 20
+#include "wtime.h"
 
 //Timing
-typedef std::chrono::high_resolution_clock::time_point TimeVar;
-#define duration(a) std::chrono::duration_cast<std::chrono::microseconds>(a).count()
-#define timeNow() std::chrono::high_resolution_clock::now()
 /*
   Failed Ideas/Methods:
   std::bitset can not be initialized with a variable (only constant)
@@ -23,8 +17,8 @@ typedef std::chrono::high_resolution_clock::time_point TimeVar;
 */
 enum NextToRun { Top_Down, Bottom_Up };
 typedef graph<long, long, int, long, long, char> Graph;
-inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplored, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads);
-inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int &edgesExplored, unsigned num_vertices, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads);
+inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplored, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double alpha);
+inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int &edgesExplored, unsigned num_vertices, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double beta);
 int main(int argc, char* argv[])
 {
   if(!omp_get_cancellation())
@@ -35,40 +29,50 @@ int main(int argc, char* argv[])
       execv(argv[0], argv);
     }
   //Graph Init
-  std::cout << "Input: ./exe beg csr weight number_threads\n";
-  if (argc != 5) { std::cout << "Wrong input\n"; return -1; }
+  std::cout << "Input: ./exe beg csr weight number_threads root(-1 if not sure) (optional)alpha (optional)beta\n";
+  if (argc != 6 && argc != 8) { std::cout << "Wrong input\n"; return -1; }
   const char *beg_file = argv[1]; //Vertices -- Like RowPtr
   const char *csr_file = argv[2]; //Edges -- That lead to the Node described from the Node (index+1) in Offsets array (Beg_file)
   const char *weight_file = argv[3]; //Weight -- Unused
   const int number_threads = atoi(argv[4]);
   Graph *ginst = new Graph(beg_file, csr_file, weight_file);
+  int root = atoi(argv[5]);
+  double alpha = .15;
+  double beta = 20;
+  if(argc == 8)
+  {
+    alpha = atof(argv[6]);
+    beta = atof(argv[7]);
+  }
+
   //General Init
   std::vector<int> nodes;
-  std::vector<int> edges; //Do we want this to entirely replace edgesExplored? If we do that then we would need to sum through the vector every time we wanted edgesExplored (But this isn't very costly)
+  std::vector<int> edges;
   nodes.push_back(0); edges.push_back(0); //First Level with only root
-  nodes.push_back(0); edges.push_back(0); //Where first frontier begins in Top_Down
   unsigned num_vertices = 1;
   int edgesExplored = 0, edgesFrontier = 0;
   int* level = new int[ginst->vert_count];
   memset(level, -1, sizeof(int)*ginst->vert_count);
-  //Frontier - Holds Node/Vertex # which also act as an Index in beg_pos
-  //Init the frontier - Find the lowest Node/Vertex that has an adjacency
-  int root = -1;
-  for(int i = 0; i < ginst->vert_count; i++)
-    {
-      //Once we have found the index in beg_pos that is no longer looking at the first index of edge list (->csr), then we are currently sitting on the true index that the adjency list
-      //begining at ->csr[0] belongs to
-      if(ginst->beg_pos[i+1] != 0) //We skip any "missing" vertexs (no edges) by skipping all but the last vertex that has beg_pos[i] of 0
+  if(root == -1)
+  {
+    //Finds a root
+    for(int i = 0; i < ginst->vert_count; i++)
         {
-          printf("Root: %d\n", i);
-          level[i] = 0; root =i;
-          break;
+        //Once we have found the index in beg_pos that is no longer looking at the first index of edge list (->csr), then we are currently sitting on the true index that the adjency list
+        //begining at ->csr[0] belongs to
+            if(ginst->beg_pos[i+1] != 0) //We skip any "missing" vertexs (no edges) by skipping all but the last vertex that has beg_pos[i] of 0
+            {
+                level[i] = 0; root =i;
+                break;
+            }
         }
-    } assert(root >= 0);
+    }
+  printf("Root: %d\n", root);
   nodes.at(0) = 1;
-  edges.at(0) = edgesFrontier += (ginst->beg_pos[root+1] - ginst->beg_pos[root]);
-  //Find true # of vertices
-  //Can loop through and count how many different numbers we see for a accurate value (Confirmed accurate)
+  edges.at(0) = (ginst->beg_pos[root+1] - ginst->beg_pos[root]);
+  edgesFrontier += edges.at(0);
+
+  //Find true number of verticies
   int last_num = 0;
   for(int j = 1; j < ginst->vert_count; ++j)
     {
@@ -81,7 +85,7 @@ int main(int argc, char* argv[])
   //Stats - Init
   int edges_TD = 0, edges_BU = 0, edges_base = 0;
   double time_TD = 0.0, time_BU = 0.0;
-  TimeVar start = timeNow();
+  double start = wtime();
   NextToRun next = Top_Down;
   int current_level = 0;
   unsigned total_nodes = 0;
@@ -90,34 +94,34 @@ int main(int argc, char* argv[])
     {
       if(next == Top_Down)
         {
-          TimeVar start_TD = timeNow();
-          next = bfs_top_down(ginst, edgesFrontier, edgesExplored, level, edges, nodes, current_level, number_threads);
-          TimeVar end_TD = timeNow();
+          double start_TD = wtime();
+          next = bfs_top_down(ginst, edgesFrontier, edgesExplored, level, edges, nodes, current_level, number_threads, alpha);
+          double end_TD = wtime();
           edges_TD += (edgesExplored-edges_base); edges_base = edgesExplored;
-          time_TD += duration(end_TD-start_TD);
+          time_TD += end_TD-start_TD;
         }
       if(next == Bottom_Up)
         {
-          TimeVar start_BU = timeNow();
-          next = bfs_bottom_up(ginst, edgesFrontier, edgesExplored, num_vertices, level, edges, nodes, current_level, number_threads);
-          TimeVar end_BU = timeNow();
+          double start_BU = wtime();
+          next = bfs_bottom_up(ginst, edgesFrontier, edgesExplored, num_vertices, level, edges, nodes, current_level, number_threads, beta);
+          double end_BU = wtime();
           edges_BU += (edgesExplored-edges_base); edges_base = edgesExplored;
-          time_BU += duration(end_BU-start_BU);
+          time_BU += end_BU-start_BU;
         }
       total_nodes = 0;
       for(unsigned i = 0; i < nodes.size(); ++i) { total_nodes+= nodes.at(i); } //printf("Total nodes: %d\n", total_nodes);
     }
-  TimeVar end = timeNow();
-  double time_total = duration(end-start);
+  double end = wtime();
+  double time_total = end-start;
   for(unsigned i = 0; i < nodes.size(); ++i)
     {
       if(nodes.at(i) != 0)
-	{
-	  printf("Level: %d\tFrontier Size: %d\tEdges: %d\n", i, nodes.at(i), edges.at(i));
-	}
+	    {
+	        printf("Level: %d\tFrontier Size: %d\tEdges: %d\n", i, nodes.at(i), edges.at(i));
+	    }
     }
   std::cout << "Edges: " << "\t\t%Top_Down: " << 100*(edges_TD*1.0/edgesExplored) << "\t%Bottom_Up: " << 100*(edges_BU*1.0/edgesExplored) << "\tTotal: " << edgesExplored << std::endl;
-  std::cout << "Timing(ms): " << "\t%Top_Down: " << 100*(time_TD/time_total) << "\t%Bottom_Up: " << 100*(time_BU/time_total) << "\tTotal: " << (int)time_total << std::endl;
+  std::cout << "Timing(seconds): " << "\t%Top_Down: " << 100*(time_TD/time_total) << "\t%Bottom_Up: " << 100*(time_BU/time_total) << "\tTotal: " << time_total << std::endl;
 
   // Cleanup
   free(ginst->beg_pos);
@@ -133,7 +137,7 @@ int main(int argc, char* argv[])
 
 
 
-inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplored, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads)
+inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplored, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double alpha)
 {
   int* partial_edgesExplored = new int[number_threads];  assert(partial_edgesExplored != NULL);
   int* partial_edgesFrontier = new int[number_threads]; assert(partial_edgesFrontier != NULL);
@@ -141,7 +145,7 @@ inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplor
   memset(partial_edgesExplored, 0, sizeof(int)*number_threads);
   memset(partial_edgesFrontier, 0, sizeof(int)*number_threads);
   memset(partial_nodes, 0, sizeof(int)*number_threads);
-  #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, number_threads, partial_edgesExplored, partial_nodes, partial_edgesFrontier) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored)
+  #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, number_threads, partial_edgesExplored, partial_nodes, partial_edgesFrontier) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored)
   {
     const int tid = omp_get_thread_num();
     const int section_size = ginst->vert_count/number_threads;
@@ -182,18 +186,13 @@ inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplor
           memset(partial_edgesExplored, 0, sizeof(int)*number_threads);
           memset(partial_edgesFrontier, 0, sizeof(int)*number_threads);
           memset(partial_nodes, 0, sizeof(int)*number_threads);
+          ++current_level; edges.push_back(0); nodes.push_back(0);
         }
-        if(nodes.at(current_level) == 0)
+        if(nodes.at(current_level-1) == 0)
           {
             #pragma omp cancel parallel
           }
-        #pragma omp barrier
-        #pragma omp single
-        {
-          ++current_level; edges.push_back(0); nodes.push_back(0);
-        }
-
-        if(edgesFrontier > (ginst->edge_count-edgesExplored)/alpha)
+        if(edgesFrontier/ginst->edge_count > alpha)
           {
             #pragma omp cancel parallel
           }
@@ -203,9 +202,9 @@ inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplor
   delete[] partial_edgesExplored;
   delete[] partial_edgesFrontier;
   delete[] partial_nodes;
-  return (edgesFrontier > (ginst->edge_count-edgesExplored)/alpha) ? Bottom_Up:Top_Down;
+  return (edgesFrontier/ginst->edge_count > alpha) ? Bottom_Up:Top_Down;
 }
-inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplored, unsigned num_vertices, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads)
+inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplored, unsigned num_vertices, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double beta)
 {
   edgesFrontier = 0;
   int* partial_edgesExplored = new int[number_threads]; assert(partial_edgesExplored != NULL);
@@ -253,5 +252,5 @@ inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplo
   delete[] partial_nodes;
   delete[] partial_edgesExplored;
   delete[] partial_edgesFrontier;
-  return nodes.at(current_level) < ((int)num_vertices / beta) ? Top_Down:Bottom_Up;
+  return nodes.at(current_level)/num_vertices <  beta ? Top_Down:Bottom_Up;
 }
