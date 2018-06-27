@@ -4,21 +4,11 @@
 #include <queue>
 #include "wtime.h"
 
-//Timing
-/*
-  Failed Ideas/Methods:
-  std::bitset can not be initialized with a variable (only constant)
-*/
-/*
-  Current Issues:
-  1 Still Reachable memory leak
-  6 "Memory leaks" from OpenMP
-  Future Issues/Questions:
-*/
 enum NextToRun { Top_Down, Bottom_Up };
 typedef graph<long, long, int, long, long, char> Graph;
-inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplored, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double alpha);
-inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int &edgesExplored, unsigned num_vertices, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double beta);
+inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplored, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double alpha, const int tid, const int section_beg, const int section_end, int* partial_nodes, int* partial_edgesExplored, int* partial_edgesFrontier);
+inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int &edgesExplored, unsigned num_vertices, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double beta, const int tid, const int section_beg, const int section_end, int* partial_nodes, int* partial_edgesExplored, int* partial_edgesFrontier);
+
 int main(int argc, char* argv[])
 {
   if(!omp_get_cancellation())
@@ -55,16 +45,10 @@ int main(int argc, char* argv[])
   memset(level, -1, sizeof(int)*ginst->vert_count);
   if(root == -1)
   {
-    //Finds a root
     for(int i = 0; i < ginst->vert_count; i++)
-        {
-        //Once we have found the index in beg_pos that is no longer looking at the first index of edge list (->csr), then we are currently sitting on the true index that the adjency list
-        //begining at ->csr[0] belongs to
+        {   //Find first non-zero value in beg_pos, "root" is the index before that 
             if(ginst->beg_pos[i+1] != 0) //We skip any "missing" vertexs (no edges) by skipping all but the last vertex that has beg_pos[i] of 0
-            {
-                level[i] = 0; root =i;
-                break;
-            }
+            { level[i] = 0; root = i; break; }
         }
     }
   printf("Root: %d\n", root);
@@ -76,41 +60,46 @@ int main(int argc, char* argv[])
   int last_num = 0;
   for(int j = 1; j < ginst->vert_count; ++j)
     {
-      if(ginst->beg_pos[j] > last_num)
-        {
-          last_num = ginst->beg_pos[j];
-          ++num_vertices;
-        }
+      if(ginst->beg_pos[j] > last_num) { last_num = ginst->beg_pos[j]; ++num_vertices; }
     }
   //Stats - Init
-  int edges_TD = 0, edges_BU = 0, edges_base = 0;
-  double time_TD = 0.0, time_BU = 0.0;
   double start = wtime();
   NextToRun next = Top_Down;
   int current_level = 0;
   unsigned total_nodes = 0;
-  //Main Loop
+  //Main Loop  
+  int* partial_edgesExplored = new int[number_threads];  assert(partial_edgesExplored != NULL);
+  int* partial_edgesFrontier = new int[number_threads]; assert(partial_edgesFrontier != NULL);
+  int* partial_nodes = new int[number_threads]; assert(partial_nodes != NULL);
+  memset(partial_edgesExplored, 0, sizeof(int)*number_threads);
+  memset(partial_edgesFrontier, 0, sizeof(int)*number_threads);
+  memset(partial_nodes, 0, sizeof(int)*number_threads);
+ 
+  #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, partial_edgesExplored, partial_nodes, partial_edgesFrontier, total_nodes, num_vertices) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next)
+  {
+    const int tid = omp_get_thread_num();
+    const int section_size = ginst->vert_count/number_threads;
+    const int section_beg = tid*section_size;
+    const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size); 
   while (num_vertices > total_nodes)
     {
       if(next == Top_Down)
         {
-          double start_TD = wtime();
-          next = bfs_top_down(ginst, edgesFrontier, edgesExplored, level, edges, nodes, current_level, number_threads, alpha);
-          double end_TD = wtime();
-          edges_TD += (edgesExplored-edges_base); edges_base = edgesExplored;
-          time_TD += end_TD-start_TD;
+          #pragma omp barrier
+          next = bfs_top_down(ginst, edgesFrontier, edgesExplored, level, edges, nodes, current_level, number_threads, alpha, tid, section_beg, section_end, partial_nodes, partial_edgesExplored, partial_edgesFrontier);
         }
       if(next == Bottom_Up)
         {
-          double start_BU = wtime();
-          next = bfs_bottom_up(ginst, edgesFrontier, edgesExplored, num_vertices, level, edges, nodes, current_level, number_threads, beta);
-          double end_BU = wtime();
-          edges_BU += (edgesExplored-edges_base); edges_base = edgesExplored;
-          time_BU += end_BU-start_BU;
+          #pragma omp barrier
+          next = bfs_bottom_up(ginst, edgesFrontier, edgesExplored, num_vertices, level, edges, nodes, current_level, number_threads, beta, tid, section_beg, section_end, partial_nodes, partial_edgesExplored, partial_edgesFrontier);
         }
-      total_nodes = 0;
-      for(unsigned i = 0; i < nodes.size(); ++i) { total_nodes+= nodes.at(i); } //printf("Total nodes: %d\n", total_nodes);
+      #pragma omp single
+      {
+        total_nodes = 0;
+        for(unsigned i = 0; i < nodes.size(); ++i) { total_nodes+= nodes.at(i); } //printf("Total nodes: %d\n", total_nodes);
+      }
     }
+}
   double end = wtime();
   double time_total = end-start;
   for(unsigned i = 0; i < nodes.size(); ++i)
@@ -120,8 +109,7 @@ int main(int argc, char* argv[])
 	        printf("Level: %d\tFrontier Size: %d\tEdges: %d\n", i, nodes.at(i), edges.at(i));
 	    }
     }
-  std::cout << "Edges: " << "\t\t%Top_Down: " << 100*(edges_TD*1.0/edgesExplored) << "\t%Bottom_Up: " << 100*(edges_BU*1.0/edgesExplored) << "\tTotal: " << edgesExplored << std::endl;
-  std::cout << "Timing(seconds): " << "\t%Top_Down: " << 100*(time_TD/time_total) << "\t%Bottom_Up: " << 100*(time_BU/time_total) << "\tTotal: " << time_total << std::endl;
+  std::cout << "Timing(seconds): " << time_total << std::endl;
 
   // Cleanup
   free(ginst->beg_pos);
@@ -129,31 +117,21 @@ int main(int argc, char* argv[])
   free(ginst->weight);
   delete ginst;
   delete[] level;
+  delete[] partial_nodes;
+  delete[] partial_edgesExplored;
+  delete[] partial_edgesFrontier;
   return 0;
 }
 
-
-
-
-
-
-inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplored, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double alpha)
+inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplored, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double alpha, const int tid, const int section_beg, const int section_end, int* partial_nodes, int* partial_edgesExplored, int* partial_edgesFrontier)
 {
-  int* partial_edgesExplored = new int[number_threads];  assert(partial_edgesExplored != NULL);
-  int* partial_edgesFrontier = new int[number_threads]; assert(partial_edgesFrontier != NULL);
-  int* partial_nodes = new int[number_threads]; assert(partial_nodes != NULL);
   memset(partial_edgesExplored, 0, sizeof(int)*number_threads);
   memset(partial_edgesFrontier, 0, sizeof(int)*number_threads);
   memset(partial_nodes, 0, sizeof(int)*number_threads);
-  #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, number_threads, partial_edgesExplored, partial_nodes, partial_edgesFrontier) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored)
-  {
-    const int tid = omp_get_thread_num();
-    const int section_size = ginst->vert_count/number_threads;
-    const int section_beg = tid*section_size;
-    const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
     while(true)
       {
         for (int vert_index = section_beg; vert_index < section_end; vert_index++) //Go through your section
+        {
           {
             if (level[vert_index]==current_level) // If unexplored
               {
@@ -173,6 +151,7 @@ inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplor
                   }
               }
           }
+        }
         #pragma omp barrier //Wait for other threads to finish their section
         #pragma omp single //Stats updating and level update
         {
@@ -190,37 +169,22 @@ inline NextToRun bfs_top_down(Graph *ginst, int &edgesFrontier, int &edgesExplor
         }
         if(nodes.at(current_level-1) == 0)
           {
-            #pragma omp cancel parallel
+            break;
           }
         if(edgesFrontier/ginst->edge_count > alpha)
           {
-            #pragma omp cancel parallel
+            break;
           }
       }
-  }
-  //No longer in parallel region so just be one thread
-  delete[] partial_edgesExplored;
-  delete[] partial_edgesFrontier;
-  delete[] partial_nodes;
   return (edgesFrontier/ginst->edge_count > alpha) ? Bottom_Up:Top_Down;
 }
-inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplored, unsigned num_vertices, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double beta)
+inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplored, unsigned num_vertices, int* level, std::vector<int> &edges, std::vector<int> &nodes, int &current_level, const int number_threads, double beta, const int tid, const int section_beg, const int section_end, int* partial_nodes, int* partial_edgesExplored, int* partial_edgesFrontier)
 {
-  edgesFrontier = 0;
-  int* partial_edgesExplored = new int[number_threads]; assert(partial_edgesExplored != NULL);
-  int* partial_edgesFrontier = new int[number_threads]; assert(partial_edgesFrontier != NULL);
-  int* partial_nodes = new int[number_threads]; assert(partial_nodes != NULL);
-  //Init
-  memset(partial_nodes, 0, sizeof(int)*number_threads);
   memset(partial_edgesExplored, 0, sizeof(int)*number_threads);
   memset(partial_edgesFrontier, 0, sizeof(int)*number_threads);
-  #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, number_threads, partial_edgesExplored, partial_edgesFrontier, partial_nodes) shared(level, current_level)
-  {
-    const int tid = omp_get_thread_num();
-    const int section_size = ginst->vert_count/number_threads;
-    const int section_beg = tid*section_size;
-    const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
-    for (int vert_index = section_beg; vert_index < section_end; ++vert_index)
+  memset(partial_nodes, 0, sizeof(int)*number_threads);
+  edgesFrontier = 0;
+  for (int vert_index = section_beg; vert_index < section_end; ++vert_index)
       {
         if (level[vert_index]==-1) //Unexplored (Only want to look through potential children of frontier)
           {
@@ -240,7 +204,6 @@ inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplo
               }
           }
       }
-  }
   for(int j = 0; j < number_threads; ++j)
     {
       nodes.at(current_level) += partial_nodes[j];
@@ -249,8 +212,5 @@ inline NextToRun bfs_bottom_up(Graph *ginst, int &edgesFrontier, int& edgesExplo
     }
   edgesExplored += edges.at(current_level);
   current_level++; nodes.push_back(0); edges.push_back(0);
-  delete[] partial_nodes;
-  delete[] partial_edgesExplored;
-  delete[] partial_edgesFrontier;
   return nodes.at(current_level)/num_vertices <  beta ? Top_Down:Bottom_Up;
 }
