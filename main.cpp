@@ -4,6 +4,23 @@
 #include <queue>
 #include "wtime.h"
 
+//Problem 1: Now that the parallel was moved out, each thread is going to call each function just for itself. Which creates major issues with keeping them "together" and with the same knowledge
+//Even with criticals, one thread could output its results and then go on to the heuristic before any other thread even got to the outputting of results. Which means, that some threads
+//Will begin to do different paths since one thread may see lower value when looking at the heuristic than other will, with potential for different returns
+//"Solution": Add more barriers in this main loop. Technically the last thread out should update "next" to be correct since it should have all the info
+
+//Problem 2: Top Down is gonna have issues though since it doesn't have to return after each level at the moment. This means the solution to Porblem 1 doesn't help
+//with Top Down. Another major issue here is that current_level is impossible to keep accurate, without breaking out of function after every level check
+//Since different threads could each increment the current_level, making it not only way to high, but more importantly creating an issue, where a thread that is still running,
+//now just had an updated current_level and might start marking levels wrong now. (This could be solved with doing a local copy of current_level, however other issues still remain).
+//Also creates the issue of the threads branching again. This time one thread may start on another level because it saw the heuristic with a lower value than the others.
+//"Solution": Break out of function after every single level is explored.
+//--- While main doesn't have a large amount of costs, this still adds more time ---
+
+//Probelm 3: Two more criticals are now in the code, while they aren't hit too often it is still a problem for performance
+//Idea(failed): Create one very large results array (num_threads*num_results_per_thread[which is 3 currently]), pass the pointer to the start of the section that belongs to each TID, and use that
+//When exit function do summing. -- Failed since we need the updated info in the functions.
+//Branch of idea: No longer check heuristics in the function(s), check in main loop
 #define just_top_down 0
 enum NextToRun { Top_Down, Bottom_Up };
 typedef graph<long, long, int, long, long, char> Graph;
@@ -66,27 +83,25 @@ int main(int argc, char* argv[])
   double start = wtime();
   NextToRun next = Top_Down;
   int current_level = 0;
-  unsigned total_nodes = 0;
   //Main Loop
   int* results = new int[number_threads*3];
   memset(results, 0, sizeof(int)*number_threads*3); //Results: nodes, edgesExplored, edgesFrontier *number_threads
   //Just TOP_DOWN
   if(just_top_down)
     {
-      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, total_nodes, num_vertices) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
+      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
       {
         const int tid = omp_get_thread_num();
         const int section_size = ginst->vert_count/number_threads;
         const int section_beg = tid*section_size;
         const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
-        while(num_vertices > total_nodes)
+        while(current_level == 0 || nodes.at(current_level-1) > 0)
           {
             #pragma omp barrier
             bfs_top_down(ginst, level, &(results[tid*3]), current_level, section_beg, section_end);
             #pragma omp barrier
             #pragma omp single
             {
-	      edgesFrontier = 0;
               for(int i = 0; i < number_threads; i++)
                 {
                   nodes.at(current_level) += results[i*3];
@@ -98,41 +113,19 @@ int main(int argc, char* argv[])
               current_level++; nodes.push_back(0); edges.push_back(0);
               memset(results, 0, sizeof(int)*number_threads*3);
             }
-            #pragma omp single
-            {
-              total_nodes = 0;
-              for(unsigned i = 0; i < nodes.size(); ++i) { total_nodes+= nodes.at(i); } //printf("Total nodes: %d\n", total_nodes);
-            }
           }
         #pragma omp cancel parallel
       }
     }
-  //Problem 1: Now that the parallel was moved out, each thread is going to call each function just for itself. Which creates major issues with keeping them "together" and with the same knowledge
-  //Even with criticals, one thread could output its results and then go on to the heuristic before any other thread even got to the outputting of results. Which means, that some threads
-  //Will begin to do different paths since one thread may see lower value when looking at the heuristic than other will, with potential for different returns
-  //"Solution": Add more barriers in this main loop. Technically the last thread out should update "next" to be correct since it should have all the info
-
-  //Problem 2: Top Down is gonna have issues though since it doesn't have to return after each level at the moment. This means the solution to Porblem 1 doesn't help
-  //with Top Down. Another major issue here is that current_level is impossible to keep accurate, without breaking out of function after every level check
-  //Since different threads could each increment the current_level, making it not only way to high, but more importantly creating an issue, where a thread that is still running,
-  //now just had an updated current_level and might start marking levels wrong now. (This could be solved with doing a local copy of current_level, however other issues still remain).
-  //Also creates the issue of the threads branching again. This time one thread may start on another level because it saw the heuristic with a lower value than the others.
-  //"Solution": Break out of function after every single level is explored.
-  //--- While main doesn't have a large amount of costs, this still adds more time ---
-
-  //Probelm 3: Two more criticals are now in the code, while they aren't hit too often it is still a problem for performance
-  //Idea(failed): Create one very large results array (num_threads*num_results_per_thread[which is 3 currently]), pass the pointer to the start of the section that belongs to each TID, and use that
-  //When exit function do summing. -- Failed since we need the updated info in the functions.
-  //Branch of idea: No longer check heuristics in the function(s), check in main loop
   if(!just_top_down)
     {
-      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, total_nodes, num_vertices) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
+      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
       {
         const int tid = omp_get_thread_num();
         const int section_size = ginst->vert_count/number_threads;
         const int section_beg = tid*section_size;
         const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
-        while (num_vertices > total_nodes)
+        while (current_level == 0 || nodes.at(current_level-1) > 0)
           {
             if(next == Top_Down)
               {
@@ -141,7 +134,7 @@ int main(int argc, char* argv[])
                 #pragma omp barrier
                 #pragma omp single
                 {
-		  edgesFrontier = 0;
+		  printf("Left TD\n");
                   for(int i = 0; i < number_threads; i++)
                     {
                       nodes.at(current_level) += results[i*3];
@@ -161,7 +154,7 @@ int main(int argc, char* argv[])
                 #pragma omp barrier
                 #pragma omp single
                 {
-		  edgesFrontier = 0;
+		  printf("Left BU\n");
                   for(int i = 0; i < number_threads; i++)
                     {
                       nodes.at(current_level) += results[i*3];
@@ -174,11 +167,6 @@ int main(int argc, char* argv[])
                   memset(results, 0, sizeof(int)*number_threads*3);
                 }
               }
-            #pragma omp single
-            {
-              total_nodes = 0;
-              for(unsigned i = 0; i < nodes.size(); ++i) { total_nodes+= nodes.at(i); } //printf("Total nodes: %d\n", total_nodes);
-            }
           }
         #pragma omp cancel parallel
       }
@@ -215,13 +203,12 @@ inline void bfs_top_down(Graph *ginst, int* level, int* results, int current_lev
           for(int neighbor_index = neighbor_beg; neighbor_index < neighbor_end; neighbor_index++) //Go through neighbors
             {
               int node = ginst->csr[neighbor_index];
-              results[2] += (ginst->beg_pos[node+1] - ginst->beg_pos[node]);
               ++results[1];
-              #pragma omp critical(NeighborUpdate)
               if(level[node] == -1) //If neighbor is unexplored
                 {
                   level[node] = current_level+1; //Add to next frontier
                   ++results[0];
+                  results[2] += (ginst->beg_pos[node+1] - ginst->beg_pos[node]);
                 }
             }
         }
