@@ -86,6 +86,7 @@ int main(int argc, char* argv[])
             #pragma omp barrier
             #pragma omp single
             {
+	      edgesFrontier = 0;
               for(int i = 0; i < number_threads; i++)
                 {
                   nodes.at(current_level) += results[i*3];
@@ -140,6 +141,7 @@ int main(int argc, char* argv[])
                 #pragma omp barrier
                 #pragma omp single
                 {
+		  edgesFrontier = 0;
                   for(int i = 0; i < number_threads; i++)
                     {
                       nodes.at(current_level) += results[i*3];
@@ -159,6 +161,7 @@ int main(int argc, char* argv[])
                 #pragma omp barrier
                 #pragma omp single
                 {
+		  edgesFrontier = 0;
                   for(int i = 0; i < number_threads; i++)
                     {
                       nodes.at(current_level) += results[i*3];
