@@ -1,4 +1,6 @@
 #include <cstdlib>
+#include <fstream>
+#include <iostream>
 #include <omp.h>
 #include "graph.h"
 #include <queue>
@@ -52,26 +54,16 @@ int main(int argc, char* argv[])
       alpha = atof(argv[6]);
       beta = atof(argv[7]);
     }
-  //General Init
-  std::vector<int> nodes;
-  std::vector<int> edges;
-  nodes.push_back(0); edges.push_back(0); //First Level with only root
   unsigned num_vertices = 1;
-  int edgesExplored = 0, edgesFrontier = 0;
-  int* level = new int[ginst->vert_count];
-  memset(level, -1, sizeof(int)*ginst->vert_count);
   if(root == -1)
     {
       for(int i = 0; i < ginst->vert_count; i++)
         {   //Find first non-zero value in beg_pos, "root" is the index before that
           if(ginst->beg_pos[i+1] != 0) //We skip any "missing" vertexs (no edges) by skipping all but the last vertex that has beg_pos[i] of 0
-            { level[i] = 0; root = i; break; }
+            { root = i; break; }
         }
     }
   printf("Root: %d\tThis is included in level 0\n", root);
-  nodes.at(0) = 1;
-  edges.at(0) = (ginst->beg_pos[root+1] - ginst->beg_pos[root]);
-  edgesFrontier += edges.at(0);
 
   //Find true number of verticies
   int last_num = 0;
@@ -80,105 +72,113 @@ int main(int argc, char* argv[])
       if(ginst->beg_pos[j] > last_num) { last_num = ginst->beg_pos[j]; ++num_vertices; }
     }
   //Stats - Init
+  //Main Loop
+  //Problem -- Knowing what cache line size line is per user? (Mine is 64 bytes will just work with that)
+
   double start = wtime();
   NextToRun next = Top_Down;
   int current_level = 0;
-  //Main Loop
-  //Problem -- Knowing what cache line size line is per user? (Mine is 64 bytes will just work with that)
   int cache_line_size = 64; //Bytes
   int size_int = sizeof(int); // Should be 4 here
   int number_stats = 3;
-  int padding = cache_line_size/size_int + 1; //Pad away one full cache size; 
+  int padding = cache_line_size/size_int + 1; //Pad away one full cache size;
   int spacing = cache_line_size/(size_int*number_stats);
   int extra_padding = cache_line_size%(size_int*number_stats);
-  int* results = new int[padding + (number_threads*(number_stats*spacing+extra_padding))];
-  memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding)))); //Results: nodes, edgesExplored, edgesFrontier *number_threads
-  //Just TOP_DOWN
-  if(just_top_down)
+  const char* separator = ",";
+  std::ofstream outputFile;
+  outputFile.open("output.csv", std::ios::out);
+  outputFile << "Filename: " << argv[0] << separator << "Edges: " << ginst->edge_count << separator << "Nodes: " << num_vertices << std::endl;
+  outputFile << "Alpha" << separator << "Beta" << separator << "Average Time" << std::endl; //Header
+  int TEST_CASES = 10;
+  double end_alpha = 1.0;
+  double end_beta = 1.0;
+  double delta = .050;
+  double org_beta = beta;
+  while(alpha < end_alpha)
     {
-#pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
-      {
-        const int tid = omp_get_thread_num();
-        const int section_size = ginst->vert_count/number_threads;
-        const int section_beg = tid*section_size;
-        const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
-        while(current_level == 0 || nodes.at(current_level-1) > 0)
-          {
-            #pragma omp barrier
-            bfs_top_down(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
-            #pragma omp barrier
-            #pragma omp single
+      beta = org_beta;
+      while(beta < end_beta)
+        {
+	  printf("Alpha: %lf\tBeta: %lf\n", alpha, beta);
+	  double total_time = 0.0;
+          for(int i = 0; i < TEST_CASES; i++)
             {
-              for(int i = 0; i < number_threads; i++)
-                {
-                  nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
-		  edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
-                  edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
-                }
-              edgesExplored += edges.at(current_level);
-              next = (edgesFrontier/(ginst->edge_count-edgesExplored) > alpha) ? Bottom_Up:Top_Down;
-              current_level++; nodes.push_back(0); edges.push_back(0);
-              memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
+              std::vector<int> nodes;
+              std::vector<int> edges;
+              nodes.push_back(0); edges.push_back(0); //First Level with only root
+              int edgesExplored = 0, edgesFrontier = 0;
+              int* level = new int[ginst->vert_count];
+              memset(level, -1, sizeof(int)*ginst->vert_count);
+	      level[root] = 0;
+              next = Top_Down;
+              current_level = 0;
+              nodes.at(0) = 1;
+              edges.at(0) = (ginst->beg_pos[root+1] - ginst->beg_pos[root]);
+              edgesFrontier += edges.at(0);
+              int* results = new int[padding + (number_threads*(number_stats*spacing+extra_padding))];
+              memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding)))); //Results: nodes, edgesExplored, edgesFrontier *number_threads
+              start = wtime();
+              #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
+              {
+                const int tid = omp_get_thread_num();
+                const int section_size = ginst->vert_count/number_threads;
+                const int section_beg = tid*section_size;
+                const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
+                while (current_level == 0 || nodes.at(current_level-1) > 0)
+                  {
+                    if(next == Top_Down)
+                      {
+                        #pragma omp barrier
+                        bfs_top_down(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
+                        #pragma omp barrier
+                        #pragma omp single
+                        {
+                          for(int i = 0; i < number_threads; i++)
+                            {
+                              nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
+                              edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
+                              edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
+                            }
+                          edgesExplored += edges.at(current_level);
+                          next = ((1.0)*edgesFrontier/(ginst->edge_count-edgesExplored) > alpha) ? Bottom_Up:Top_Down;
+                          current_level++; nodes.push_back(0); edges.push_back(0);
+                          memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
+                        }
+                      }
+                    if(next == Bottom_Up)
+                      {
+                        #pragma omp barrier
+                        bfs_bottom_up(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
+                        #pragma omp barrier
+                        #pragma omp single
+                        {
+                          for(int i = 0; i < number_threads; i++)
+                            {
+                              nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
+                              edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
+                              edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
+                            }
+                          edgesExplored += edges.at(current_level);
+                          next = (1.0)*nodes.at(current_level)/num_vertices <  beta ? Top_Down:Bottom_Up;
+                          current_level++; nodes.push_back(0); edges.push_back(0);
+                          memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
+                        }
+                      }
+                  }
+                #pragma omp cancel parallel
+              }
+              double end = wtime();
+	      total_time+= (end-start);
+              delete[] level;
+              delete[] results;
             }
-          }
-        #pragma omp cancel parallel
-      }
+	  outputFile << alpha << separator << beta << separator << total_time/TEST_CASES << std::endl;
+          beta+=delta;
+        }
+      alpha+=delta;
     }
-  if(!just_top_down)
-    {
-#pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
-      {
-        const int tid = omp_get_thread_num();
-        const int section_size = ginst->vert_count/number_threads;
-        const int section_beg = tid*section_size;
-        const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
-        while (current_level == 0 || nodes.at(current_level-1) > 0)
-          {
-            if(next == Top_Down)
-              {
-                #pragma omp barrier
-                bfs_top_down(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
-                #pragma omp barrier
-                #pragma omp single
-                {
-                  for(int i = 0; i < number_threads; i++)
-                    {
-                      nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
-                      edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
-                      edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
-                    }
-                  edgesExplored += edges.at(current_level);
-		  //printf("Heuristic Info:: edgesFrontier: %d\tUnexplored Edges: %d\n\t edgesFrontier/UnexploredEdges: %d");
-                  next = ((1.0)*edgesFrontier/(ginst->edge_count-edgesExplored) > alpha) ? Bottom_Up:Top_Down;
-                  current_level++; nodes.push_back(0); edges.push_back(0);
-                  memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
-                }
-              }
-            if(next == Bottom_Up)
-              {
-                #pragma omp barrier
-                bfs_bottom_up(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
-                #pragma omp barrier
-                #pragma omp single
-                {
-                  for(int i = 0; i < number_threads; i++)
-                    {
-                      nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
-		      edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
-                      edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
-                    }
-                  edgesExplored += edges.at(current_level);
-                  next = (1.0)*nodes.at(current_level)/num_vertices <  beta ? Top_Down:Bottom_Up;
-                  current_level++; nodes.push_back(0); edges.push_back(0);
-                  memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
-                }
-              }
-          }
-        #pragma omp cancel parallel
-      }
-    }
-  double end = wtime();
-  double time_total = end-start;
+  outputFile.close();
+  /*
   for(unsigned i = 0; i < nodes.size(); ++i)
     {
       if(nodes.at(i) != 0)
@@ -187,39 +187,37 @@ int main(int argc, char* argv[])
         }
     }
   std::cout << "Timing(seconds): " << time_total << std::endl;
-
+  */
   // Cleanup
   free(ginst->beg_pos);
   free(ginst->csr);
   free(ginst->weight);
   delete ginst;
-  delete[] level;
-  delete[] results;
   return 0;
 }
 
-inline void bfs_top_down(Graph *ginst, int* level, int* results, int current_level, const int section_beg, const int section_end)
-{
-  for (int vert_index = section_beg; vert_index < section_end; vert_index++) //Go through your section
-    {
-      if (level[vert_index]==current_level) // If unexplored
-        {
-          int neighbor_beg = ginst->beg_pos[vert_index];
-          int neighbor_end = ginst->beg_pos[vert_index+1];
-          for(int neighbor_index = neighbor_beg; neighbor_index < neighbor_end; neighbor_index++) //Go through neighbors
-            {
-              int node = ginst->csr[neighbor_index];
-              ++results[1];
-              if(level[node] == -1) //If neighbor is unexplored
-                {
-                  level[node] = current_level+1; //Add to next frontier
-                  ++results[0];
-                  results[2] += (ginst->beg_pos[node+1] - ginst->beg_pos[node]);
-                }
-            }
-        }
-    }
-}
+  inline void bfs_top_down(Graph *ginst, int* level, int* results, int current_level, const int section_beg, const int section_end)
+  {
+    for (int vert_index = section_beg; vert_index < section_end; vert_index++) //Go through your section
+      {
+        if (level[vert_index]==current_level) // If unexplored
+          {
+            int neighbor_beg = ginst->beg_pos[vert_index];
+            int neighbor_end = ginst->beg_pos[vert_index+1];
+            for(int neighbor_index = neighbor_beg; neighbor_index < neighbor_end; neighbor_index++) //Go through neighbors
+              {
+                int node = ginst->csr[neighbor_index];
+                ++results[1];
+                if(level[node] == -1) //If neighbor is unexplored
+                  {
+                    level[node] = current_level+1; //Add to next frontier
+                    ++results[0];
+                    results[2] += (ginst->beg_pos[node+1] - ginst->beg_pos[node]);
+                  }
+              }
+          }
+      }
+  }
 inline void bfs_bottom_up(Graph *ginst, int* level, int* results, int current_level, const int section_beg, const int section_end)
 {
   for (int vert_index = section_beg; vert_index < section_end; ++vert_index)
