@@ -4,24 +4,7 @@
 #include <queue>
 #include "wtime.h"
 
-//Problem 1: Now that the parallel was moved out, each thread is going to call each function just for itself. Which creates major issues with keeping them "together" and with the same knowledge
-//Even with criticals, one thread could output its results and then go on to the heuristic before any other thread even got to the outputting of results. Which means, that some threads
-//Will begin to do different paths since one thread may see lower value when looking at the heuristic than other will, with potential for different returns
-//"Solution": Add more barriers in this main loop. Technically the last thread out should update "next" to be correct since it should have all the info
-
-//Problem 2: Top Down is gonna have issues though since it doesn't have to return after each level at the moment. This means the solution to Porblem 1 doesn't help
-//with Top Down. Another major issue here is that current_level is impossible to keep accurate, without breaking out of function after every level check
-//Since different threads could each increment the current_level, making it not only way to high, but more importantly creating an issue, where a thread that is still running,
-//now just had an updated current_level and might start marking levels wrong now. (This could be solved with doing a local copy of current_level, however other issues still remain).
-//Also creates the issue of the threads branching again. This time one thread may start on another level because it saw the heuristic with a lower value than the others.
-//"Solution": Break out of function after every single level is explored.
-//--- While main doesn't have a large amount of costs, this still adds more time ---
-
-//Probelm 3: Two more criticals are now in the code, while they aren't hit too often it is still a problem for performance
-//Idea(failed): Create one very large results array (num_threads*num_results_per_thread[which is 3 currently]), pass the pointer to the start of the section that belongs to each TID, and use that
-//When exit function do summing. -- Failed since we need the updated info in the functions.
-//Branch of idea: No longer check heuristics in the function(s), check in main loop
-#define just_top_down 0
+#define just 0
 enum NextToRun { Top_Down, Bottom_Up };
 typedef graph<long, long, int, long, long, char> Graph;
 inline void bfs_top_down(Graph *ginst, int* level, int* results, int current_level, const int section_beg, const int section_end);
@@ -88,15 +71,44 @@ int main(int argc, char* argv[])
   int cache_line_size = 64; //Bytes
   int size_int = sizeof(int); // Should be 4 here
   int number_stats = 3;
-  int padding = cache_line_size/size_int + 1; //Pad away one full cache size; 
+  int padding = cache_line_size/size_int + 1; //Pad away one full cache size;
   int spacing = cache_line_size/(size_int*number_stats);
   int extra_padding = cache_line_size%(size_int*number_stats);
   int* results = new int[padding + (number_threads*(number_stats*spacing+extra_padding))];
   memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding)))); //Results: nodes, edgesExplored, edgesFrontier *number_threads
-  //Just TOP_DOWN
-  if(just_top_down)
+  if(just == 2)
     {
-#pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
+      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
+      {
+        const int tid = omp_get_thread_num();
+        const int section_size = ginst->vert_count/number_threads;
+        const int section_beg = tid*section_size;
+        const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
+        while (current_level == 0 || nodes.at(current_level-1) > 0)
+          {
+            #pragma omp barrier
+            bfs_bottom_up(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
+            #pragma omp barrier
+            #pragma omp single
+            {
+              for(int i = 0; i < number_threads; i++)
+                {
+                  nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
+                  edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
+                  edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
+                }
+              edgesExplored += edges.at(current_level);
+              next = Bottom_Up;
+              current_level++; nodes.push_back(0); edges.push_back(0);
+              memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
+            }
+          }
+      }
+    }
+  //Just TOP_DOWN
+  if(just == 1)
+    {
+      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
       {
         const int tid = omp_get_thread_num();
         const int section_size = ginst->vert_count/number_threads;
@@ -112,7 +124,7 @@ int main(int argc, char* argv[])
               for(int i = 0; i < number_threads; i++)
                 {
                   nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
-		  edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
+                  edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
                   edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
                 }
               edgesExplored += edges.at(current_level);
@@ -124,9 +136,9 @@ int main(int argc, char* argv[])
         #pragma omp cancel parallel
       }
     }
-  if(!just_top_down)
+  if(just == 0)
     {
-#pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
+      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
       {
         const int tid = omp_get_thread_num();
         const int section_size = ginst->vert_count/number_threads;
@@ -148,7 +160,6 @@ int main(int argc, char* argv[])
                       edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
                     }
                   edgesExplored += edges.at(current_level);
-		  //printf("Heuristic Info:: edgesFrontier: %d\tUnexplored Edges: %d\n\t edgesFrontier/UnexploredEdges: %d");
                   next = ((1.0)*edgesFrontier/(ginst->edge_count-edgesExplored) > alpha) ? Bottom_Up:Top_Down;
                   current_level++; nodes.push_back(0); edges.push_back(0);
                   memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
@@ -164,7 +175,7 @@ int main(int argc, char* argv[])
                   for(int i = 0; i < number_threads; i++)
                     {
                       nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
-		      edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
+                      edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
                       edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
                     }
                   edgesExplored += edges.at(current_level);
