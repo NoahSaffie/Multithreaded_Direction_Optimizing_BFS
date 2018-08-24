@@ -4,7 +4,6 @@
 #include <queue>
 #include "wtime.h"
 
-#define just 0
 enum NextToRun { Top_Down, Bottom_Up };
 typedef graph<long, long, int, long, long, char> Graph;
 inline void bfs_top_down(Graph *ginst, int* level, int* results, int current_level, const int section_beg, const int section_end);
@@ -20,152 +19,94 @@ int main(int argc, char* argv[])
       execv(argv[0], argv);
     }
   //Graph Init
-  std::cout << "Input: ./exe beg csr weight number_threads root(-1 if not sure) (optional)[alpha, beta]\n";
-  if (argc != 6 && argc != 8) { std::cout << "Wrong input\n"; return -1; }
+  std::cout << "Input: ./exe beg csr weight number_threads root(-1 if not sure) alpha(-1 for default) beta(-1 for default) tests_run test_type(0 - Direction-Optimizing, 1 - Just Top Down, 2 - Just Bottom Up\n";
+  if (argc != 10) { std::cout << "Wrong input\n"; return -1; }
   const char *beg_file = argv[1]; //Vertices -- Like RowPtr
   const char *csr_file = argv[2]; //Edges -- That lead to the Node described from the Node (index+1) in Offsets array (Beg_file)
   const char *weight_file = argv[3]; //Weight -- Unused
   const int number_threads = atoi(argv[4]);
   Graph *ginst = new Graph(beg_file, csr_file, weight_file);
   int root = atoi(argv[5]);
-  double alpha = .15;
-  double beta = 20;
-  if(argc == 8)
+  double alpha = .07142;
+  double beta = .04166;
+  if(atof(argv[6]) == -1)
     {
       alpha = atof(argv[6]);
+    }
+  if(atof(argv[7]) == -1)
+    {
       beta = atof(argv[7]);
     }
+  int just = atoi(argv[9]);
+  if(just > 2 || just < 0)
+    {
+      std::cout << "Wrong input\n"; return -1;
+    }
+  int tests_run = atoi(argv[8]);
+  int copy_tests_run = tests_run;
+  if(tests_run < 0){ std::cout << "Wrong input\n"; return -1; }
   //General Init
-  std::vector<int> nodes;
-  std::vector<int> edges;
-  nodes.push_back(0); edges.push_back(0); //First Level with only root
-  unsigned num_vertices = 1;
-  int edgesExplored = 0, edgesFrontier = 0;
-  int* level = new int[ginst->vert_count];
-  memset(level, -1, sizeof(int)*ginst->vert_count);
+  std::vector<int> init_nodes;
+  std::vector<int> init_edges;
+  init_nodes.push_back(0); init_edges.push_back(0); //First Level with only root
+  unsigned init_num_vertices = 1;
+  int init_edgesExplored = 0, init_edgesFrontier = 0;
   if(root == -1)
     {
       for(int i = 0; i < ginst->vert_count; i++)
         {   //Find first non-zero value in beg_pos, "root" is the index before that
           if(ginst->beg_pos[i+1] != 0) //We skip any "missing" vertexs (no edges) by skipping all but the last vertex that has beg_pos[i] of 0
-            { level[i] = 0; root = i; break; }
+            { root = i; break; }
         }
     }
   printf("Root: %d\tThis is included in level 0\n", root);
-  nodes.at(0) = 1;
-  edges.at(0) = (ginst->beg_pos[root+1] - ginst->beg_pos[root]);
-  edgesFrontier += edges.at(0);
+  init_nodes.at(0) = 1;
+  init_edges.at(0) = (ginst->beg_pos[root+1] - ginst->beg_pos[root]);
+  init_edgesFrontier += init_edges.at(0);
 
   //Find true number of verticies
   int last_num = 0;
   for(int j = 1; j < ginst->vert_count; ++j)
     {
-      if(ginst->beg_pos[j] > last_num) { last_num = ginst->beg_pos[j]; ++num_vertices; }
+      if(ginst->beg_pos[j] > last_num) { last_num = ginst->beg_pos[j]; ++init_num_vertices; }
     }
   //Stats - Init
-  double start = wtime();
-  NextToRun next = Top_Down;
-  int current_level = 0;
-  //Main Loop
-  //Problem -- Knowing what cache line size line is per user? (Mine is 64 bytes will just work with that)
-  int cache_line_size = 64; //Bytes
-  int size_int = sizeof(int); // Should be 4 here
-  int number_stats = 3;
-  int padding = cache_line_size/size_int + 1; //Pad away one full cache size;
-  int spacing = cache_line_size/(size_int*number_stats);
-  int extra_padding = cache_line_size%(size_int*number_stats);
-  int* results = new int[padding + (number_threads*(number_stats*spacing+extra_padding))];
-  memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding)))); //Results: nodes, edgesExplored, edgesFrontier *number_threads
-  if(just == 2)
+  double time_total = 0;
+  while(tests_run > 0)
     {
-      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
-      {
-        const int tid = omp_get_thread_num();
-        const int section_size = ginst->vert_count/number_threads;
-        const int section_beg = tid*section_size;
-        const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
-        while (current_level == 0 || nodes.at(current_level-1) > 0)
+      //Reset info for new test run
+      int num_vertices = init_num_vertices;
+      std::vector<int> nodes = init_nodes;
+      std::vector<int> edges = init_edges;
+      int* level = new int[ginst->vert_count];
+      memset(level, -1, sizeof(int)*ginst->vert_count);
+      level[root] = 0;
+      int edgesFrontier = init_edgesFrontier;
+      int edgesExplored = init_edgesExplored;
+
+      double start = wtime();
+      NextToRun next = Top_Down;
+      int current_level = 0;
+      //Main Loop
+      //Problem -- Knowing what cache line size line is per user? (Mine is 64 bytes will just work with that)
+      int cache_line_size = 64; //Bytes
+      int size_int = sizeof(int); // Should be 4 here
+      int number_stats = 3;
+      int padding = cache_line_size/size_int + 1; //Pad away one full cache size;
+      int spacing = cache_line_size/(size_int*number_stats);
+      int extra_padding = cache_line_size%(size_int*number_stats);
+      int* results = new int[padding + (number_threads*(number_stats*spacing+extra_padding))];
+      memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding)))); //Results: nodes, edgesExplored, edgesFrontier *number_threads
+      //Just bottom_Up
+      if(just == 2)
+        {
+          #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
           {
-            #pragma omp barrier
-            bfs_bottom_up(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
-            #pragma omp barrier
-            #pragma omp single
-            {
-              for(int i = 0; i < number_threads; i++)
-                {
-                  nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
-                  edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
-                  edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
-                }
-              edgesExplored += edges.at(current_level);
-              next = Bottom_Up;
-              current_level++; nodes.push_back(0); edges.push_back(0);
-              memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
-            }
-          }
-      }
-    }
-  //Just TOP_DOWN
-  if(just == 1)
-    {
-      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
-      {
-        const int tid = omp_get_thread_num();
-        const int section_size = ginst->vert_count/number_threads;
-        const int section_beg = tid*section_size;
-        const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
-        while(current_level == 0 || nodes.at(current_level-1) > 0)
-          {
-            #pragma omp barrier
-            bfs_top_down(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
-            #pragma omp barrier
-            #pragma omp single
-            {
-              for(int i = 0; i < number_threads; i++)
-                {
-                  nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
-                  edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
-                  edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
-                }
-              edgesExplored += edges.at(current_level);
-              next = (edgesFrontier/(ginst->edge_count-edgesExplored) > alpha) ? Bottom_Up:Top_Down;
-              current_level++; nodes.push_back(0); edges.push_back(0);
-              memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
-            }
-          }
-        #pragma omp cancel parallel
-      }
-    }
-  if(just == 0)
-    {
-      #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
-      {
-        const int tid = omp_get_thread_num();
-        const int section_size = ginst->vert_count/number_threads;
-        const int section_beg = tid*section_size;
-        const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
-        while (current_level == 0 || nodes.at(current_level-1) > 0)
-          {
-            if(next == Top_Down)
-              {
-                #pragma omp barrier
-                bfs_top_down(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
-                #pragma omp barrier
-                #pragma omp single
-                {
-                  for(int i = 0; i < number_threads; i++)
-                    {
-                      nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
-                      edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
-                      edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
-                    }
-                  edgesExplored += edges.at(current_level);
-                  next = ((1.0)*edgesFrontier/(ginst->edge_count-edgesExplored) > alpha) ? Bottom_Up:Top_Down;
-                  current_level++; nodes.push_back(0); edges.push_back(0);
-                  memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
-                }
-              }
-            if(next == Bottom_Up)
+            const int tid = omp_get_thread_num();
+            const int section_size = ginst->vert_count/number_threads;
+            const int section_beg = tid*section_size;
+            const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
+            while (current_level == 0 || nodes.at(current_level-1) > 0)
               {
                 #pragma omp barrier
                 bfs_bottom_up(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
@@ -179,33 +120,119 @@ int main(int argc, char* argv[])
                       edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
                     }
                   edgesExplored += edges.at(current_level);
-                  next = (1.0)*nodes.at(current_level)/num_vertices <  beta ? Top_Down:Bottom_Up;
+                  next = Bottom_Up;
                   current_level++; nodes.push_back(0); edges.push_back(0);
                   memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
                 }
               }
           }
-        #pragma omp cancel parallel
-      }
-    }
-  double end = wtime();
-  double time_total = end-start;
-  for(unsigned i = 0; i < nodes.size(); ++i)
-    {
-      if(nodes.at(i) != 0)
-        {
-          printf("Level: %d\tFrontier Size: %d\tEdges: %d\n", i, nodes.at(i), edges.at(i));
         }
+      //Just TOP_DOWN
+      if(just == 1)
+        {
+          #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
+          {
+            const int tid = omp_get_thread_num();
+            const int section_size = ginst->vert_count/number_threads;
+            const int section_beg = tid*section_size;
+            const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
+            while(current_level == 0 || nodes.at(current_level-1) > 0)
+              {
+                #pragma omp barrier
+                bfs_top_down(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
+                #pragma omp barrier
+                #pragma omp single
+                {
+                  for(int i = 0; i < number_threads; i++)
+                    {
+                      nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
+                      edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
+                      edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
+                    }
+                  edgesExplored += edges.at(current_level);
+                  next = (edgesFrontier/(ginst->edge_count-edgesExplored) > alpha) ? Bottom_Up:Top_Down;
+                  current_level++; nodes.push_back(0); edges.push_back(0);
+                  memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
+                }
+              }
+            #pragma omp cancel parallel
+          }
+        }
+      if(just == 0)
+        {
+          #pragma omp parallel num_threads(number_threads) default(none) firstprivate(ginst, alpha, beta, number_threads, num_vertices, padding, spacing, number_stats, extra_padding) shared(level, current_level, edges, nodes, edgesFrontier, edgesExplored, next, results)
+          {
+            const int tid = omp_get_thread_num();
+            const int section_size = ginst->vert_count/number_threads;
+            const int section_beg = tid*section_size;
+            const int section_end = (tid==number_threads-1 ? ginst->vert_count:section_beg+section_size);
+            while (current_level == 0 || nodes.at(current_level-1) > 0)
+              {
+                if(next == Top_Down)
+                  {
+                    #pragma omp barrier
+                    bfs_top_down(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
+                    #pragma omp barrier
+                    #pragma omp single
+                    {
+                      for(int i = 0; i < number_threads; i++)
+                        {
+                          nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
+                          edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
+                          edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
+                        }
+                      edgesExplored += edges.at(current_level);
+                      next = ((1.0)*edgesFrontier/(ginst->edge_count-edgesExplored) > alpha) ? Bottom_Up:Top_Down;
+                      current_level++; nodes.push_back(0); edges.push_back(0);
+                      memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
+                    }
+                  }
+                if(next == Bottom_Up)
+                  {
+                    #pragma omp barrier
+                    bfs_bottom_up(ginst, level, &(results[padding + (tid*(number_stats*spacing+extra_padding))]), current_level, section_beg, section_end);
+                    #pragma omp barrier
+                    #pragma omp single
+                    {
+                      for(int i = 0; i < number_threads; i++)
+                        {
+                          nodes.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))];
+                          edges.at(current_level) += results[padding + (i*(number_stats*spacing+extra_padding))+1];
+                          edgesFrontier += results[padding + (i*(number_stats*spacing+extra_padding))+2];
+                        }
+                      edgesExplored += edges.at(current_level);
+                      next = (1.0)*nodes.at(current_level)/num_vertices <  beta ? Top_Down:Bottom_Up;
+                      current_level++; nodes.push_back(0); edges.push_back(0);
+                      memset(results, 0, sizeof(int)*(padding + (number_threads*(number_stats*spacing+extra_padding))));
+                    }
+                  }
+              }
+            #pragma omp cancel parallel
+          }
+        }
+      double end = wtime();
+      time_total+= (end-start);
+      if(tests_run == 1)
+        {
+          for(unsigned i = 0; i < nodes.size(); ++i)
+            {
+              if(nodes.at(i) != 0)
+                {
+                  printf("Level: %d\tFrontier Size: %d\tEdges: %d\n", i, nodes.at(i), edges.at(i));
+                }
+            }
+        }
+      tests_run--;
+      delete[] results;
+      delete[] level;
     }
-  std::cout << "Timing(seconds): " << time_total << std::endl;
+  std::cout << "Timing(seconds): " << time_total/((1.0)*copy_tests_run) << std::endl;
 
   // Cleanup
   free(ginst->beg_pos);
   free(ginst->csr);
   free(ginst->weight);
   delete ginst;
-  delete[] level;
-  delete[] results;
   return 0;
 }
 
